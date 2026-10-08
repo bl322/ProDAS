@@ -45,7 +45,7 @@ class RunParams:
     base_url: str = ""
     api_key: str = ""
     no_proxy: str = ""
-    use_mock: bool = True
+    use_mock: bool = False
 
     # ---- 模型角色 ----
     target_model: str = "qwen3-next-80b-a3b-instruct"
