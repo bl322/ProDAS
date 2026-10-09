@@ -1,4 +1,4 @@
-/* DUALBREACH-AJ 前端 */
+/* ProDAS 前端 */
 
 const $ = (id) => document.getElementById(id);
 
@@ -57,13 +57,31 @@ async function boot() {
   for (const op of META.operators) OPS[op.name] = {n: 0, mean: 0, family: op.family};
   renderOps();
 
-  $("batch_dir").textContent = META.paths.batch_dir;
+  $("batch_dir").textContent = META.paths.batch_dir_rel || META.paths.batch_dir;
   loadPipeline();
   loadRuns();
   bindMode();
+  bindNav();
   syncStrategyHint();
   health();
   setInterval(health, 30000);
+}
+
+// ---------------------------------------------------------------------------
+// 顶部页签：评测台 / 历史结果
+// ---------------------------------------------------------------------------
+function bindNav() {
+  const ev = $("nav-eval"), hi = $("nav-history");
+  if (!ev || !hi) return;
+  ev.onclick = () => {
+    ev.classList.add("on"); hi.classList.remove("on");
+    $("view-eval").style.display = ""; $("view-history").style.display = "none";
+  };
+  hi.onclick = () => {
+    hi.classList.add("on"); ev.classList.remove("on");
+    $("view-eval").style.display = "none"; $("view-history").style.display = "";
+    if (!$("history_body").dataset.loaded) loadHistory();
+  };
 }
 
 function fillSelect(id, options, value) {
@@ -84,11 +102,14 @@ function syncStrategyHint() {
 }
 
 async function health() {
+  const chip = $("chip_backend");
   try {
     const r = await fetch("/api/health");
     const j = await r.json();
-    $("health").textContent = "服务在线 · " + j.time;
-  } catch (e) { $("health").textContent = "服务离线"; }
+    if (chip) chip.textContent = "后端已连接 · ProDAS · " + j.time;
+  } catch (e) {
+    if (chip) chip.textContent = "后端离线";
+  }
 }
 
 async function loadPipeline() {
@@ -389,8 +410,104 @@ async function makeFailed() {
 }
 
 // ---------------------------------------------------------------------------
+// 历史结果页（按实验组聚合）
+// ---------------------------------------------------------------------------
+async function loadHistory() {
+  const body = $("history_body");
+  try {
+    const r = await fetch("/api/history");
+    const j = await r.json();
+    $("hist_dir").textContent = j.batch_dir_rel || j.batch_dir || "";
+    body.innerHTML = (j.groups || []).map(renderGroup).join("")
+      || '<div class="muted">暂无历史结果</div>';
+    body.dataset.loaded = "1";
+    bindRunDetails();
+  } catch (e) {
+    body.innerHTML = '<div class="muted">加载失败：' + esc(e) + "</div>";
+  }
+}
+
+function asrCell(v) {
+  if (v == null) return '<td class="mono muted">—</td>';
+  const cls = v >= 97.5 ? "asr-hi" : (v >= 90 ? "asr-mid" : "asr-lo");
+  return `<td class="mono ${cls}">${v}%</td>`;
+}
+
+function renderGroup(g) {
+  let pivot = "";
+  if (g.models && g.models.length && g.rounds && g.rounds.length) {
+    const cols = g.rounds.map(r => `<th>第 ${r} 轮</th>`).join("");
+    const rows = g.models.map(m => {
+      const rs = (g.runs || []).filter(e => e.model === m);
+      const byRound = g.rounds.map(r => {
+        const f = rs.find(e => e.round === r);
+        return f ? f.stats.asr : null;
+      });
+      const valid = byRound.filter(v => v != null);
+      const mean = valid.length
+        ? Math.round(valid.reduce((a, b) => a + b, 0) / valid.length * 100) / 100 : null;
+      const aqc = rs.length
+        ? Math.round(rs.reduce((a, e) => a + (e.stats.aqc || 0), 0) / rs.length * 100) / 100
+        : null;
+      return `<tr><td class="mono">${esc(m)}</td>${byRound.map(asrCell).join("")}` +
+        `${asrCell(mean)}<td class="mono">${aqc != null ? aqc : "—"}</td></tr>`;
+    }).join("");
+    pivot = `<div class="scroll"><table class="data">` +
+      `<thead><tr><th>目标模型</th>${cols}<th>均值</th><th>AQC(全体)</th></tr></thead>` +
+      `<tbody>${rows}</tbody></table></div>`;
+  }
+  const details = (g.runs || []).map(e => {
+    const asr = e.stats.asr != null ? e.stats.asr : 0;
+    const cls = asr >= 97.5 ? "asr-hi" : (asr >= 90 ? "asr-mid" : "asr-lo");
+    const name = e.model && e.model !== e.tag ? `${e.model}${e.round ? " · 第 " + e.round + " 轮" : ""}` : e.tag;
+    return `<details class="rundetail" data-path="${esc(e.path)}">
+      <summary><b>${esc(name)}</b> · ${e.stats.total} 条 · 成功 ${e.stats.success} ·
+        ASR <span class="${cls}">${asr}%</span> · AQC ${e.stats.aqc} ·
+        平均最高分 ${e.stats.avg_best_score != null ? e.stats.avg_best_score : "—"} · ${esc(e.finished || "")}</summary>
+      <div class="body"><div class="tiny muted">展开加载逐条明细…</div></div>
+    </details>`;
+  }).join("");
+  return `<div class="panel hist-group">
+    <div class="panel-title">${esc(g.title)}</div>
+    <div class="hist-desc">${esc(g.desc)}</div>
+    ${pivot}${details}
+  </div>`;
+}
+
+function bindRunDetails() {
+  document.querySelectorAll("details.rundetail").forEach(d => {
+    if (d.dataset.bound) return;
+    d.dataset.bound = "1";
+    d.addEventListener("toggle", async () => {
+      if (!d.open || d.dataset.loaded) return;
+      const body = d.querySelector(".body");
+      try {
+        const r = await fetch("/api/runs/detail?path="
+          + encodeURIComponent(d.dataset.path) + "&limit=500");
+        const j = await r.json();
+        const rows = (j.records || []).map(x => `<tr>
+          <td class="mono">${esc(x.id)}</td>
+          <td>${x.success
+            ? '<span class="badge ok">成功</span>'
+            : `<span class="badge bad">${x.best_score != null ? x.best_score : "-"} 分</span>`}</td>
+          <td>${esc(clip(x.goal, 56))}</td>
+          <td class="mono">${x.queries}</td>
+        </tr>`).join("");
+        body.innerHTML = `<table class="data">
+          <thead><tr><th>id</th><th>结果</th><th>目标</th><th>查询</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="4" class="muted">暂无</td></tr>'}</tbody></table>`;
+        d.dataset.loaded = "1";
+      } catch (e) {
+        body.innerHTML = '<div class="muted">加载失败</div>';
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
 $("run").onclick = run;
 $("cancel").onclick = cancel;
 $("refresh_runs").onclick = loadRuns;
 $("make_failed").onclick = makeFailed;
+$("hist_refresh").onclick = loadHistory;
 boot();

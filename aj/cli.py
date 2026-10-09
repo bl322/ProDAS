@@ -21,7 +21,7 @@ VERBOSE_TYPES = {"tdi", "warm_start", "iter", "probe", "attempt", "bandit",
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aj",
-        description="DUALBREACH-AJ：攻击 + 裁判双角色越狱评测",
+        description="ProDAS：攻击 + 裁判双角色越狱评测",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "示例：\n"
